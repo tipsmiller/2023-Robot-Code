@@ -2,6 +2,7 @@ package frc.robot.subsystems;
 
 import java.util.TimerTask;
 
+import edu.wpi.first.math.geometry.Rotation2d;
 import edu.wpi.first.wpilibj.I2C;
 import edu.wpi.first.wpilibj.Timer;
 
@@ -79,6 +80,7 @@ public class BNO055 {
 	private static int _mode;
 	private static opmode_t requestedMode; //user requested mode of operation.
 	private static vector_type_t requestedVectorType;
+	private static BNO055OffsetData offsets;  // Offsets to write during initialization.
 	
 	//State machine variables
 	private volatile int state = 0;
@@ -89,6 +91,8 @@ public class BNO055 {
 	private volatile byte[] positionVector = new byte[6];
 	private volatile long turns = 0;
 	private volatile double[] xyz = new double[3];
+
+	private double headingOffset = 0.0; //degrees
 
 	public class SystemStatus {
 		public int system_status;
@@ -364,6 +368,40 @@ public class BNO055 {
 	}
 
 	/**
+	 * Get an instance of the IMU object. Write calib data during initialization.
+	 * 
+	 * @param mode the operating mode to run the sensor in.
+	 * @param port the physical port the sensor is plugged into on the roboRio
+	 * @param address the address the sensor is at (0x28 or 0x29)
+	 * @return the instantiated BNO055 object
+	 */
+	public static BNO055 getInstance(opmode_t mode, vector_type_t vectorType,
+			I2C.Port port, byte address, int[] offsetData) {
+		if(instance == null) {
+			instance = new BNO055(port, address);
+		}
+		requestedMode = mode;
+		requestedVectorType = vectorType;
+		offsets = instance.new BNO055OffsetData();
+
+		offsets.accelOffsetX = offsetData[0];
+		offsets.accelOffsetY = offsetData[1];
+		offsets.accelOffsetZ = offsetData[2];
+		offsets.accelRadius = offsetData[3];
+
+		offsets.gyroOffsetX = offsetData[4];
+		offsets.gyroOffsetY = offsetData[5];
+		offsets.gyroOffsetZ = offsetData[6];
+
+		offsets.magOffsetX = offsetData[7];
+		offsets.magOffsetY = offsetData[8];
+		offsets.magOffsetZ = offsetData[9];
+		offsets.magRadius = offsetData[10];
+
+		return instance;
+	}
+
+	/**
 	 * Get an instance of the IMU object plugged into the onboard I2C header.
 	 *   Using the default address (0x28)
 	 *  
@@ -401,6 +439,7 @@ public class BNO055 {
 					//Sensor present, go to next state
 					sensorPresent = true;
 					state++;
+					System.out.println("BNO055 sensor detected, beginning initialization.");
 					nextTime = Timer.getFPGATimestamp() + 0.050;
 				}
 				break;
@@ -415,6 +454,7 @@ public class BNO055 {
 			case 2:
 				// Reset
 				if(currentTime >= nextTime){
+					System.out.println("BNO055 resetting.");
 					write8(reg_t.BNO055_SYS_TRIGGER_ADDR, (byte) 0x20);
 					state++;
 				}
@@ -423,6 +463,7 @@ public class BNO055 {
 				//Wait for the sensor to be present
 				if((0xFF & read8(reg_t.BNO055_CHIP_ID_ADDR)) == BNO055_ID) {
 					//Sensor present, go to next state
+					System.out.println("BNO055 back online.");
 					state++;
 					//Log current time
 					nextTime = Timer.getFPGATimestamp() + 0.050;
@@ -432,6 +473,7 @@ public class BNO055 {
 				//Wait at least 50ms
 				if(currentTime >= nextTime) {
 					/* Set to normal power mode */
+					System.out.println("BNO055 setting to normal power mode.");
 					write8(reg_t.BNO055_PWR_MODE_ADDR, (byte) powermode_t.POWER_MODE_NORMAL.getVal());
 					nextTime = Timer.getFPGATimestamp() + 0.050;
 					state++;
@@ -440,6 +482,7 @@ public class BNO055 {
 			case 5:
 				//Use external crystal - 32.768 kHz
 				if(currentTime >= nextTime) {
+					System.out.println("BNO055 clearing page.");
 					write8(reg_t.BNO055_PAGE_ID_ADDR, (byte) 0x00);
 					nextTime = Timer.getFPGATimestamp() + 0.050;
 					state++;
@@ -447,12 +490,22 @@ public class BNO055 {
 				break;
 			case 6:
 				if(currentTime >= nextTime) {
+					System.out.println("BNO055 doing this thing.");
 					write8(reg_t.BNO055_SYS_TRIGGER_ADDR, (byte) 0x80);
 					nextTime = Timer.getFPGATimestamp() + 0.500;
 					state++;
 				}
 				break;
 			case 7:
+				if(currentTime >= nextTime) {
+					if (offsets != null) {
+						writeOffsets(offsets, requestedMode);
+					}
+					nextTime = Timer.getFPGATimestamp() + 0.500;
+					state++;
+				}
+				break;
+			case 8:
 				//Set operating mode to mode requested at instantiation
 				if(currentTime >= nextTime) {
 					setMode(requestedMode);
@@ -460,11 +513,12 @@ public class BNO055 {
 					state++;
 				}
 				break;
-			case 8:
+			case 9:
 				if(currentTime >= nextTime) {
 					state++;
 				}
-			case 9:
+			case 10:
+				System.out.println("BNO055 initialized.");
 				initialized = true;
 				break;
 			default:
@@ -546,11 +600,16 @@ public class BNO055 {
 	 * @param mode
 	 */
 	public void setMode(opmode_t mode) {
+		System.out.println(String.format("BNO055 switching to mode %s", mode.name()));
 		setMode(mode.getVal());
 	}
 
 	private void setMode(int mode) {
+		System.out.println("BNO055 switching to config mode.");
+		write8(reg_t.BNO055_OPR_MODE_ADDR, (byte) opmode_t.OPERATION_MODE_CONFIG.getVal());
+		Timer.delay(0.020);
 		_mode = mode;
+		System.out.println("BNO055 switching to desired mode.");
 		write8(reg_t.BNO055_OPR_MODE_ADDR, (byte) _mode);
 	}
 
@@ -830,5 +889,109 @@ public class BNO055 {
 		public void run() {
 			imu.update();
 		}
+	}
+
+	public class BNO055OffsetData {
+		public int accelOffsetX;
+		public int accelOffsetY;
+		public int accelOffsetZ;
+		public int accelRadius;
+
+		public int gyroOffsetX;
+		public int gyroOffsetY;
+		public int gyroOffsetZ;
+
+		public int magOffsetX;
+		public int magOffsetY;
+		public int magOffsetZ;
+		public int magRadius;
+	}
+
+	private void write16(reg_t registerLSB, reg_t registerMSB, int value) {
+		// Write the least significant bits
+		write8(registerLSB, (byte) (value & 0x00FF));
+		// Write the most significant bits
+		write8(registerMSB, (byte) ((value >> 8) & 0x00FF));
+	}
+	private int read16(reg_t registerLSB, reg_t registerMSB) {
+		int value = 0;
+		// Read the least significant bits
+		int lsb = read8(registerLSB);
+		// Read the most significant bits
+		int msb = read8(registerMSB);
+		value = (msb << 8) | lsb;
+		return value;
+	}
+
+	public void writeOffsets(BNO055OffsetData offsetData, opmode_t desiredMode) {
+		System.out.println("BNO055 setting calibration offsets.");
+		// Set device to config mode
+		setMode(opmode_t.OPERATION_MODE_CONFIG);
+		Timer.delay(0.01);
+		// write calib registers
+		write16(reg_t.ACCEL_OFFSET_X_LSB_ADDR, reg_t.ACCEL_OFFSET_X_MSB_ADDR, offsetData.accelOffsetX);
+		write16(reg_t.ACCEL_OFFSET_Y_LSB_ADDR, reg_t.ACCEL_OFFSET_Y_MSB_ADDR, offsetData.accelOffsetY);
+		write16(reg_t.ACCEL_OFFSET_X_LSB_ADDR, reg_t.ACCEL_OFFSET_Z_MSB_ADDR, offsetData.accelOffsetZ);
+		write16(reg_t.ACCEL_RADIUS_LSB_ADDR, reg_t.ACCEL_RADIUS_MSB_ADDR, offsetData.accelRadius);
+
+		write16(reg_t.GYRO_OFFSET_X_LSB_ADDR, reg_t.GYRO_OFFSET_X_MSB_ADDR, offsetData.gyroOffsetX);
+		write16(reg_t.GYRO_OFFSET_Y_LSB_ADDR, reg_t.GYRO_OFFSET_Y_MSB_ADDR, offsetData.gyroOffsetY);
+		write16(reg_t.GYRO_OFFSET_Z_LSB_ADDR, reg_t.GYRO_OFFSET_Z_MSB_ADDR, offsetData.gyroOffsetZ);
+
+		write16(reg_t.MAG_OFFSET_X_LSB_ADDR, reg_t.MAG_OFFSET_X_MSB_ADDR, offsetData.magOffsetX);
+		write16(reg_t.MAG_OFFSET_Y_LSB_ADDR, reg_t.MAG_OFFSET_Y_MSB_ADDR, offsetData.magOffsetY);
+		write16(reg_t.MAG_OFFSET_Z_LSB_ADDR, reg_t.MAG_OFFSET_Z_MSB_ADDR, offsetData.magOffsetZ);
+		write16(reg_t.MAG_RADIUS_LSB_ADDR, reg_t.MAG_RADIUS_MSB_ADDR, offsetData.magRadius);
+		// Set device back to read mode
+		setMode(desiredMode);
+		Timer.delay(0.01);
+	}
+
+	public BNO055OffsetData readOffsets() {
+		// Set device to config mode
+		setMode(opmode_t.OPERATION_MODE_CONFIG);
+		Timer.delay(0.01);
+		
+		BNO055OffsetData offsets = new BNO055OffsetData();
+		offsets.accelOffsetX = read16(reg_t.ACCEL_OFFSET_X_LSB_ADDR, reg_t.ACCEL_OFFSET_X_MSB_ADDR);
+		offsets.accelOffsetY = read16(reg_t.ACCEL_OFFSET_Y_LSB_ADDR, reg_t.ACCEL_OFFSET_Y_MSB_ADDR);
+		offsets.accelOffsetZ = read16(reg_t.ACCEL_OFFSET_Z_LSB_ADDR, reg_t.ACCEL_OFFSET_Z_MSB_ADDR);
+		offsets.accelRadius = read16(reg_t.ACCEL_RADIUS_LSB_ADDR, reg_t.ACCEL_RADIUS_MSB_ADDR);
+
+		offsets.gyroOffsetX = read16(reg_t.GYRO_OFFSET_X_LSB_ADDR, reg_t.GYRO_OFFSET_X_MSB_ADDR);
+		offsets.gyroOffsetY = read16(reg_t.GYRO_OFFSET_Y_LSB_ADDR, reg_t.GYRO_OFFSET_Y_MSB_ADDR);
+		offsets.gyroOffsetZ = read16(reg_t.GYRO_OFFSET_Z_LSB_ADDR, reg_t.GYRO_OFFSET_Z_MSB_ADDR);
+
+		offsets.magOffsetX = read16(reg_t.MAG_OFFSET_X_LSB_ADDR, reg_t.MAG_OFFSET_X_MSB_ADDR);
+		offsets.magOffsetY = read16(reg_t.MAG_OFFSET_Y_LSB_ADDR, reg_t.MAG_OFFSET_Y_MSB_ADDR);
+		offsets.magOffsetZ = read16(reg_t.MAG_OFFSET_Z_LSB_ADDR, reg_t.MAG_OFFSET_Z_MSB_ADDR);
+		offsets.magRadius = read16(reg_t.MAG_RADIUS_LSB_ADDR, reg_t.MAG_RADIUS_MSB_ADDR);
+
+		System.out.println("BNO055 offsets:");
+		System.out.println("accelx: " + offsets.accelOffsetX);
+		System.out.println("accely: " + offsets.accelOffsetY);
+		System.out.println("accelz: " + offsets.accelOffsetZ);
+		System.out.println("accelradius: " + offsets.accelRadius);
+	
+		System.out.println("gyrox: " + offsets.gyroOffsetX);
+		System.out.println("gyroy: " + offsets.gyroOffsetY);
+		System.out.println("gyroz: " + offsets.gyroOffsetZ);
+	
+		System.out.println("magx: " + offsets.magOffsetX);
+		System.out.println("magy: " + offsets.magOffsetY);
+		System.out.println("magz: " + offsets.magOffsetZ);
+		System.out.println("magradius: " + offsets.magRadius);
+
+		return offsets;
+	}
+
+	// These methods made to simulate pigeon-esque behavior
+	public Rotation2d getRotation2d() {
+		// get yaw
+		return Rotation2d.fromDegrees(getHeading() - headingOffset);
+	}
+
+	public void reset() {
+		headingOffset = getHeading();
 	}
 }

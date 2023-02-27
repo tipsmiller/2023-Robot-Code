@@ -12,6 +12,9 @@ import edu.wpi.first.wpilibj.motorcontrol.PWMSparkMax;
 import edu.wpi.first.wpilibj2.command.Command;
 import edu.wpi.first.wpilibj2.command.CommandScheduler;
 import frc.robot.subsystems.BNO055;
+import frc.robot.subsystems.BNO055.BNO055OffsetData;
+import frc.robot.subsystems.BNO055.SystemStatus;
+import edu.wpi.first.util.function.BooleanConsumer;
 import edu.wpi.first.wpilibj.I2C;
 
 
@@ -31,7 +34,7 @@ public class Robot extends TimedRobot {
 	private BNO055.CalData cal;
 	private DecimalFormat f = new DecimalFormat("+000.000;-000.000");
   public BNO055 m_Imu;
-
+  private int[] bnoOffsets = {0, -42, -8, -24, -3, 0, 2, 299, -59, -25, 523};
 
 
   /**
@@ -44,8 +47,6 @@ public class Robot extends TimedRobot {
     // autonomous chooser on the dashboard.
     //m_robotContainer = new RobotContainer();
     //m_robotContainer.robotInit();
-
-
   }
 
   /**
@@ -67,30 +68,45 @@ public class Robot extends TimedRobot {
   /** This function is called once each time the robot enters Disabled mode. */
   @Override
   public void disabledInit() {
-    m_Imu = BNO055.getInstance(BNO055.opmode_t.OPERATION_MODE_IMUPLUS, BNO055.vector_type_t.VECTOR_EULER, I2C.Port.kOnboard, BNO055.BNO055_ADDRESS_A);
+    m_Imu = BNO055.getInstance(
+      BNO055.opmode_t.OPERATION_MODE_IMUPLUS,
+      BNO055.vector_type_t.VECTOR_EULER,
+      I2C.Port.kOnboard,
+      BNO055.BNO055_ADDRESS_A,
+      bnoOffsets
+    );
 
   }
 
   @Override
   public void disabledPeriodic() {
+        if (!m_Imu.isInitialized()) {
+      //System.out.println("COMMS: " + m_Imu.isSensorPresent()
+      //      + ", INITIALIZED: " + m_Imu.isInitialized()
+      //      + ", CALIBRATED: " + m_Imu.isCalibrated());
+      SystemStatus sysStat = m_Imu.getSystemStatus();
+      System.out.println(
+        String.format(
+          "status: %d, test result %d, error %d",
+          sysStat.system_status,
+          sysStat.self_test_result,
+          sysStat.system_error
+        )
+      );
+    } else {
     
-    //System.out.println("COMMS: " + m_Imu.isSensorPresent()
-		//			+ ", INITIALIZED: " + m_Imu.isInitialized()
-		//			+ ", CALIBRATED: " + m_Imu.isCalibrated());
-			if(m_Imu.isInitialized()){
-				pos = m_Imu.getVector();
-	
-				/* Display the floating point data */
-				System.out.println("\tX: " + f.format(pos[0])
-						+ " Y: " + f.format(pos[1]) + " Z: " + f.format(pos[2])
-						+ "  H: " + m_Imu.getHeading());
-	
-				/* Display calibration status for each sensor. */
-				//cal = m_Imu.getCalibration();
-				//System.out.println("\tCALIBRATION: Sys=" + cal.sys
-				//		+ " Gyro=" + cal.gyro + " Accel=" + cal.accel
-				//		+ " Mag=" + cal.mag);
-			}
+      /* Display the floating point data */
+      //pos = m_Imu.getVector();
+      //System.out.println("\tYaw: " + f.format(pos[0])
+      //    + " Pitch: " + f.format(pos[1]) + " Roll: " + f.format(pos[2])
+      //    + "  Heading: " + m_Imu.getHeading());
+
+    /* Display calibration status for each sensor. */
+      cal = m_Imu.getCalibration();
+      System.out.println("\tCALIBRATION: Sys=" + cal.sys
+          + " Gyro=" + cal.gyro + " Accel=" + cal.accel
+          + " Mag=" + cal.mag + " Heading=" + m_Imu.getRotation2d().getDegrees());
+    }
   }
 
   /** This autonomous runs the autonomous command selected by your {@link RobotContainer} class. */
@@ -117,11 +133,14 @@ public class Robot extends TimedRobot {
     if (m_autonomousCommand != null) {
       m_autonomousCommand.cancel();
     }
+    //BNO055OffsetData offsets = m_Imu.readOffsets();
+    m_Imu.reset();
   }
 
   /** This function is called periodically during operator control. */
   @Override
-  public void teleopPeriodic() {}
+  public void teleopPeriodic() {
+  }
 
   @Override
   public void testInit() {
