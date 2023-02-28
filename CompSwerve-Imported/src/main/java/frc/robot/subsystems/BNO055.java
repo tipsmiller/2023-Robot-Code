@@ -5,6 +5,7 @@ import java.util.TimerTask;
 import edu.wpi.first.math.geometry.Rotation2d;
 import edu.wpi.first.wpilibj.I2C;
 import edu.wpi.first.wpilibj.Timer;
+import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
 
 /**
  * BNO055 IMU for the FIRST Robotics Competition.
@@ -77,6 +78,7 @@ public class BNO055 {
 	private static BNO055 instance;
 	
 	private static I2C imu;
+	private static String name; // used to label logs and prints
 	private static int _mode;
 	private static opmode_t requestedMode; //user requested mode of operation.
 	private static vector_type_t requestedVectorType;
@@ -86,8 +88,6 @@ public class BNO055 {
 	private volatile int state = 0;
 	private volatile boolean sensorPresent = false;
 	private volatile boolean initialized = false;
-	private volatile double currentTime; //seconds
-	private volatile double nextTime; //seconds
 	private volatile byte[] positionVector = new byte[6];
 	private volatile long turns = 0;
 	private volatile double[] xyz = new double[3];
@@ -300,6 +300,15 @@ public class BNO055 {
 		public int getVal() {
 			return val;
 		}
+
+		public static opmode_t fromByte(byte mode) {
+			for (opmode_t enumVal : values()) {
+				if (enumVal.getVal() == mode) {
+					return enumVal;
+				}
+			}
+			return null;
+		}
 	}
 
 	public class RevInfo {
@@ -342,9 +351,9 @@ public class BNO055 {
 	 * @param port the physical port the sensor is plugged into on the roboRio
 	 * @param address the address the sensor is at (0x28 or 0x29)
 	 */
-	private BNO055(I2C.Port port, byte address) {
+	private BNO055(I2C.Port port, byte address, String nametag) {
 		imu = new I2C(port, address);
-		
+		name = nametag;
 		executor = new java.util.Timer();
 		executor.schedule(new BNO055UpdateTask(this), 0L, THREAD_PERIOD);
 	}
@@ -360,7 +369,7 @@ public class BNO055 {
 	public static BNO055 getInstance(opmode_t mode, vector_type_t vectorType,
 			I2C.Port port, byte address) {
 		if(instance == null) {
-			instance = new BNO055(port, address);
+			instance = new BNO055(port, address, "defaultBNO055");
 		}
 		requestedMode = mode;
 		requestedVectorType = vectorType;
@@ -373,30 +382,17 @@ public class BNO055 {
 	 * @param mode the operating mode to run the sensor in.
 	 * @param port the physical port the sensor is plugged into on the roboRio
 	 * @param address the address the sensor is at (0x28 or 0x29)
+	 * @param offsetData the offset data from a stored calibration
 	 * @return the instantiated BNO055 object
 	 */
 	public static BNO055 getInstance(opmode_t mode, vector_type_t vectorType,
-			I2C.Port port, byte address, int[] offsetData) {
+			I2C.Port port, byte address, BNO055OffsetData offsetData, String nametag) {
 		if(instance == null) {
-			instance = new BNO055(port, address);
+			instance = new BNO055(port, address, nametag);
 		}
 		requestedMode = mode;
 		requestedVectorType = vectorType;
-		offsets = instance.new BNO055OffsetData();
-
-		offsets.accelOffsetX = offsetData[0];
-		offsets.accelOffsetY = offsetData[1];
-		offsets.accelOffsetZ = offsetData[2];
-		offsets.accelRadius = offsetData[3];
-
-		offsets.gyroOffsetX = offsetData[4];
-		offsets.gyroOffsetY = offsetData[5];
-		offsets.gyroOffsetZ = offsetData[6];
-
-		offsets.magOffsetX = offsetData[7];
-		offsets.magOffsetY = offsetData[8];
-		offsets.magOffsetZ = offsetData[9];
-		offsets.magRadius = offsetData[10];
+		offsets = offsetData;
 
 		return instance;
 	}
@@ -420,15 +416,15 @@ public class BNO055 {
 	 * Called periodically. Communicates with the sensor, and checks its state. 
 	 */
 	private void update() {
-		currentTime = Timer.getFPGATimestamp(); //seconds
 		if(!initialized) {
-//			System.out.println("State: " + state + ".  curr: " + currentTime
-//					+ ", next: " + nextTime);
+			if (sensorPresent) {
+				printSystemStatus();
+			}
 			
 			//Step through process of initializing the sensor in a non-
 			//  blocking manner. This sequence of events follows the process
 			//  defined in the original adafruit source as closely as possible.
-			//  XXX: It's likely some of these delays can be optimized out.
+			//  NOTE: This has been modified to more closely match the process from the bno055 c driver from Bosch.
 			switch(state) {
 			case 0:
 				//Wait for the sensor to be present
@@ -439,86 +435,43 @@ public class BNO055 {
 					//Sensor present, go to next state
 					sensorPresent = true;
 					state++;
-					System.out.println("BNO055 sensor detected, beginning initialization.");
-					nextTime = Timer.getFPGATimestamp() + 0.050;
+					println("sensor detected, beginning initialization.");
 				}
 				break;
 			case 1:
-				if(currentTime >= nextTime) {
-					//Switch to config mode (just in case since this is the default)
-					setMode(opmode_t.OPERATION_MODE_CONFIG.getVal());
-					nextTime = Timer.getFPGATimestamp() + 0.050;
-					state++;
-				}
+				// Reset
+				println("resetting.");
+				write8(reg_t.BNO055_SYS_TRIGGER_ADDR, (byte) 0x20);
+				state++;
 				break;
 			case 2:
-				// Reset
-				if(currentTime >= nextTime){
-					System.out.println("BNO055 resetting.");
-					write8(reg_t.BNO055_SYS_TRIGGER_ADDR, (byte) 0x20);
+				//Wait for the sensor to be present
+				if((0xFF & read8(reg_t.BNO055_CHIP_ID_ADDR)) == BNO055_ID) {
+					//Sensor present, go to next state
+					println("back online.");
 					state++;
 				}
 				break;
 			case 3:
-				//Wait for the sensor to be present
-				if((0xFF & read8(reg_t.BNO055_CHIP_ID_ADDR)) == BNO055_ID) {
-					//Sensor present, go to next state
-					System.out.println("BNO055 back online.");
-					state++;
-					//Log current time
-					nextTime = Timer.getFPGATimestamp() + 0.050;
-				}
+				//Use external crystal - 32.768 kHz
+				println("clearing page.");
+				write8(reg_t.BNO055_PAGE_ID_ADDR, (byte) 0x00);
+				state++;
 				break;
 			case 4:
-				//Wait at least 50ms
-				if(currentTime >= nextTime) {
-					/* Set to normal power mode */
-					System.out.println("BNO055 setting to normal power mode.");
-					write8(reg_t.BNO055_PWR_MODE_ADDR, (byte) powermode_t.POWER_MODE_NORMAL.getVal());
-					nextTime = Timer.getFPGATimestamp() + 0.050;
-					state++;
+				if (offsets != null) {
+					println("Writing offsets");
+					writeOffsets(offsets);
 				}
+				state++;
 				break;
 			case 5:
-				//Use external crystal - 32.768 kHz
-				if(currentTime >= nextTime) {
-					System.out.println("BNO055 clearing page.");
-					write8(reg_t.BNO055_PAGE_ID_ADDR, (byte) 0x00);
-					nextTime = Timer.getFPGATimestamp() + 0.050;
-					state++;
-				}
+				//Set operating mode to mode requested at instantiation
+				setMode(requestedMode);
+				state++;
 				break;
 			case 6:
-				if(currentTime >= nextTime) {
-					System.out.println("BNO055 doing this thing.");
-					write8(reg_t.BNO055_SYS_TRIGGER_ADDR, (byte) 0x80);
-					nextTime = Timer.getFPGATimestamp() + 0.500;
-					state++;
-				}
-				break;
-			case 7:
-				if(currentTime >= nextTime) {
-					if (offsets != null) {
-						writeOffsets(offsets, requestedMode);
-					}
-					nextTime = Timer.getFPGATimestamp() + 0.500;
-					state++;
-				}
-				break;
-			case 8:
-				//Set operating mode to mode requested at instantiation
-				if(currentTime >= nextTime) {
-					setMode(requestedMode);
-					nextTime = Timer.getFPGATimestamp() + 1.05;
-					state++;
-				}
-				break;
-			case 9:
-				if(currentTime >= nextTime) {
-					state++;
-				}
-			case 10:
-				System.out.println("BNO055 initialized.");
+				println("initialized.");
 				initialized = true;
 				break;
 			default:
@@ -536,63 +489,74 @@ public class BNO055 {
 	 */
 	private void calculateVector() {
 		double[] pos = new double[3];
-		short x = 0, y = 0, z = 0;
-		double headingDiff = 0.0;
-		
-		// Read vector data (6 bytes)
-		readLen(requestedVectorType.getVal(), positionVector);
-
-		x = (short)((positionVector[0] & 0xFF)
-				| ((positionVector[1] << 8) & 0xFF00));
-		y = (short)((positionVector[2] & 0xFF)
-				| ((positionVector[3] << 8) & 0xFF00));
-		z = (short)((positionVector[4] & 0xFF)
-				| ((positionVector[5] << 8) & 0xFF00));
-
-		/* Convert the value to an appropriate range (section 3.6.4) */
-		/* and assign the value to the Vector type */
-		switch(requestedVectorType) {
-		case VECTOR_MAGNETOMETER:
-			/* 1uT = 16 LSB */
-			pos[0] = ((double)x)/16.0;
-			pos[1] = ((double)y)/16.0;
-			pos[2] = ((double)z)/16.0;
-			break;
-		case VECTOR_GYROSCOPE:
-			/* 1rps = 900 LSB */
-			pos[0] = ((double)x)/900.0;
-			pos[1] = ((double)y)/900.0;
-			pos[2] = ((double)z)/900.0;
-			break;
-		case VECTOR_EULER:
-			/* 1 degree = 16 LSB */
-			pos[0] = ((double)x)/16.0;
-			pos[1] = ((double)y)/16.0;
-			pos[2] = ((double)z)/16.0;
-			break;
-		case VECTOR_ACCELEROMETER:
-		case VECTOR_LINEARACCEL:
-		case VECTOR_GRAVITY:
-			/* 1m/s^2 = 100 LSB */
-			pos[0] = ((double)x)/100.0;
-			pos[1] = ((double)y)/100.0;
-			pos[2] = ((double)z)/100.0;
-			break;
-		}
-		
-		//calculate turns
-		headingDiff = xyz[0] - pos[0];
-		if(Math.abs(headingDiff) >= 350) {
-			//We've traveled past the zero heading position
-			if(headingDiff > 0) {
-				turns++;
-			} else {
-				turns--;
+		if (readLen(requestedVectorType.getVal(), positionVector)) {
+			// Read vector data (6 bytes)
+			short x = 0, y = 0, z = 0;
+			double headingDiff = 0.0;
+			x = (short)((positionVector[0] & 0xFF)
+					| ((positionVector[1] << 8) & 0xFF00));
+			y = (short)((positionVector[2] & 0xFF)
+					| ((positionVector[3] << 8) & 0xFF00));
+			z = (short)((positionVector[4] & 0xFF)
+					| ((positionVector[5] << 8) & 0xFF00));
+			
+			/* Convert the value to an appropriate range (section 3.6.4) */
+			/* and assign the value to the Vector type */
+			switch(requestedVectorType) {
+			case VECTOR_MAGNETOMETER:
+				/* 1uT = 16 LSB */
+				pos[0] = ((double)x)/16.0;
+				pos[1] = ((double)y)/16.0;
+				pos[2] = ((double)z)/16.0;
+				break;
+			case VECTOR_GYROSCOPE:
+				/* 1rps = 900 LSB */
+				pos[0] = ((double)x)/900.0;
+				pos[1] = ((double)y)/900.0;
+				pos[2] = ((double)z)/900.0;
+				break;
+			case VECTOR_EULER:
+				/* 1 degree = 16 LSB */
+				pos[0] = ((double)x)/16.0;
+				pos[1] = ((double)y)/16.0;
+				pos[2] = ((double)z)/16.0;
+				break;
+			case VECTOR_ACCELEROMETER:
+			case VECTOR_LINEARACCEL:
+			case VECTOR_GRAVITY:
+				/* 1m/s^2 = 100 LSB */
+				pos[0] = ((double)x)/100.0;
+				pos[1] = ((double)y)/100.0;
+				pos[2] = ((double)z)/100.0;
+				break;
 			}
+			
+			//calculate turns
+			headingDiff = xyz[0] - pos[0];
+			if(Math.abs(headingDiff) >= 350) {
+				//We've traveled past the zero heading position
+				if(headingDiff > 0) {
+					turns++;
+				} else {
+					turns--;
+				}
+			}
+			
+			//Update position vectors
+			xyz = pos;
+		} else {
+			// Read error, assume device needs to be reset
+			println("error reading data. Resetting device.");
+			initialized = false;
+			xyz = pos;
+			turns = 0;
+			state = 0;
 		}
-		
-		//Update position vectors
-		xyz = pos;
+
+	}
+
+	public opmode_t getMode() {
+		return opmode_t.fromByte(read8(reg_t.BNO055_OPR_MODE_ADDR));
 	}
 	
 	/**
@@ -600,17 +564,24 @@ public class BNO055 {
 	 * @param mode
 	 */
 	public void setMode(opmode_t mode) {
-		System.out.println(String.format("BNO055 switching to mode %s", mode.name()));
-		setMode(mode.getVal());
-	}
-
-	private void setMode(int mode) {
-		System.out.println("BNO055 switching to config mode.");
-		write8(reg_t.BNO055_OPR_MODE_ADDR, (byte) opmode_t.OPERATION_MODE_CONFIG.getVal());
-		Timer.delay(0.020);
-		_mode = mode;
-		System.out.println("BNO055 switching to desired mode.");
-		write8(reg_t.BNO055_OPR_MODE_ADDR, (byte) _mode);
+		opmode_t currentMode = getMode();
+		if (currentMode == mode) {
+			println("already in mode " + mode.name());
+			return;
+		}
+		if (currentMode != opmode_t.OPERATION_MODE_CONFIG) {
+			// must switch to config mode before desired mode
+			println("switching to config mode.");
+			write8(reg_t.BNO055_OPR_MODE_ADDR, (byte) opmode_t.OPERATION_MODE_CONFIG.getVal());
+			currentMode = opmode_t.OPERATION_MODE_CONFIG;
+			Timer.delay(0.020);
+		}
+		if (currentMode != mode) {
+			// If the desired mode was config, this will be skipped
+			println(String.format("switching to mode %s", mode.name()));
+			write8(reg_t.BNO055_OPR_MODE_ADDR, (byte) mode.getVal());
+			Timer.delay(0.600);
+		}
 	}
 
 	/**
@@ -810,7 +781,7 @@ public class BNO055 {
 	 * The heading of the sensor (x axis) in continuous format. Eg rotating the
 	 *   sensor clockwise two full rotations will return a value of 720 degrees.
 	 * The getVector method will return heading in a constrained 0 - 360 deg
-	 *   format if required.
+	 *   format if required. Does not apply an offset to the result.
 	 * @return heading in degrees
 	 */
 	public double getHeading() {
@@ -891,20 +862,51 @@ public class BNO055 {
 		}
 	}
 
-	public class BNO055OffsetData {
-		public int accelOffsetX;
-		public int accelOffsetY;
-		public int accelOffsetZ;
-		public int accelRadius;
+	/**
+	 * prints out system status during initialization
+	 */
+	private void printSystemStatus() {
+		SystemStatus sysStat = getSystemStatus();
+		println(
+		  String.format(
+			"system: status: %d, test result %d, error %d",
+			sysStat.system_status,
+			sysStat.self_test_result,
+			sysStat.system_error
+		  )
+		);
+	}
 
-		public int gyroOffsetX;
-		public int gyroOffsetY;
-		public int gyroOffsetZ;
+	public static class BNO055OffsetData {
+		public int accelOffsetX = 0;
+		public int accelOffsetY = 0;
+		public int accelOffsetZ = 0;
+		public int accelRadius = 0;
 
-		public int magOffsetX;
-		public int magOffsetY;
-		public int magOffsetZ;
-		public int magRadius;
+		public int gyroOffsetX = 0;
+		public int gyroOffsetY = 0;
+		public int gyroOffsetZ = 0;
+
+		public int magOffsetX = 0;
+		public int magOffsetY = 0;
+		public int magOffsetZ = 0;
+		public int magRadius = 0;
+
+		public BNO055OffsetData() {}
+
+		public BNO055OffsetData(int ax, int ay, int az, int ar, int gx, int gy, int gz, int mx, int my, int mz, int mr) {
+			accelOffsetX = ax;
+			accelOffsetY = ay;
+			accelOffsetZ = az;
+			accelRadius = ar;
+			gyroOffsetX = gx;
+			gyroOffsetY = gy;
+			gyroOffsetZ = gz;
+			magOffsetX = mx;
+			magOffsetY = my;
+			magOffsetZ = mz;
+			magRadius = mr;
+		}
 	}
 
 	private void write16(reg_t registerLSB, reg_t registerMSB, int value) {
@@ -923,15 +925,14 @@ public class BNO055 {
 		return value;
 	}
 
-	public void writeOffsets(BNO055OffsetData offsetData, opmode_t desiredMode) {
-		System.out.println("BNO055 setting calibration offsets.");
+	public void writeOffsets(BNO055OffsetData offsetData) {
+		println("setting calibration offsets.");
 		// Set device to config mode
 		setMode(opmode_t.OPERATION_MODE_CONFIG);
-		Timer.delay(0.01);
 		// write calib registers
 		write16(reg_t.ACCEL_OFFSET_X_LSB_ADDR, reg_t.ACCEL_OFFSET_X_MSB_ADDR, offsetData.accelOffsetX);
 		write16(reg_t.ACCEL_OFFSET_Y_LSB_ADDR, reg_t.ACCEL_OFFSET_Y_MSB_ADDR, offsetData.accelOffsetY);
-		write16(reg_t.ACCEL_OFFSET_X_LSB_ADDR, reg_t.ACCEL_OFFSET_Z_MSB_ADDR, offsetData.accelOffsetZ);
+		write16(reg_t.ACCEL_OFFSET_Z_LSB_ADDR, reg_t.ACCEL_OFFSET_Z_MSB_ADDR, offsetData.accelOffsetZ);
 		write16(reg_t.ACCEL_RADIUS_LSB_ADDR, reg_t.ACCEL_RADIUS_MSB_ADDR, offsetData.accelRadius);
 
 		write16(reg_t.GYRO_OFFSET_X_LSB_ADDR, reg_t.GYRO_OFFSET_X_MSB_ADDR, offsetData.gyroOffsetX);
@@ -942,15 +943,11 @@ public class BNO055 {
 		write16(reg_t.MAG_OFFSET_Y_LSB_ADDR, reg_t.MAG_OFFSET_Y_MSB_ADDR, offsetData.magOffsetY);
 		write16(reg_t.MAG_OFFSET_Z_LSB_ADDR, reg_t.MAG_OFFSET_Z_MSB_ADDR, offsetData.magOffsetZ);
 		write16(reg_t.MAG_RADIUS_LSB_ADDR, reg_t.MAG_RADIUS_MSB_ADDR, offsetData.magRadius);
-		// Set device back to read mode
-		setMode(desiredMode);
-		Timer.delay(0.01);
 	}
 
 	public BNO055OffsetData readOffsets() {
 		// Set device to config mode
 		setMode(opmode_t.OPERATION_MODE_CONFIG);
-		Timer.delay(0.01);
 		
 		BNO055OffsetData offsets = new BNO055OffsetData();
 		offsets.accelOffsetX = read16(reg_t.ACCEL_OFFSET_X_LSB_ADDR, reg_t.ACCEL_OFFSET_X_MSB_ADDR);
@@ -967,20 +964,20 @@ public class BNO055 {
 		offsets.magOffsetZ = read16(reg_t.MAG_OFFSET_Z_LSB_ADDR, reg_t.MAG_OFFSET_Z_MSB_ADDR);
 		offsets.magRadius = read16(reg_t.MAG_RADIUS_LSB_ADDR, reg_t.MAG_RADIUS_MSB_ADDR);
 
-		System.out.println("BNO055 offsets:");
-		System.out.println("accelx: " + offsets.accelOffsetX);
-		System.out.println("accely: " + offsets.accelOffsetY);
-		System.out.println("accelz: " + offsets.accelOffsetZ);
-		System.out.println("accelradius: " + offsets.accelRadius);
+		println("offsets:");
+		println("accelx: " + offsets.accelOffsetX);
+		println("accely: " + offsets.accelOffsetY);
+		println("accelz: " + offsets.accelOffsetZ);
+		println("accelradius: " + offsets.accelRadius);
 	
-		System.out.println("gyrox: " + offsets.gyroOffsetX);
-		System.out.println("gyroy: " + offsets.gyroOffsetY);
-		System.out.println("gyroz: " + offsets.gyroOffsetZ);
+		println("gyrox: " + offsets.gyroOffsetX);
+		println("gyroy: " + offsets.gyroOffsetY);
+		println("gyroz: " + offsets.gyroOffsetZ);
 	
-		System.out.println("magx: " + offsets.magOffsetX);
-		System.out.println("magy: " + offsets.magOffsetY);
-		System.out.println("magz: " + offsets.magOffsetZ);
-		System.out.println("magradius: " + offsets.magRadius);
+		println("magx: " + offsets.magOffsetX);
+		println("magy: " + offsets.magOffsetY);
+		println("magz: " + offsets.magOffsetZ);
+		println("magradius: " + offsets.magRadius);
 
 		return offsets;
 	}
@@ -991,7 +988,31 @@ public class BNO055 {
 		return Rotation2d.fromDegrees(getHeading() - headingOffset);
 	}
 
+	/**
+	 * Sets the heading offset to current heading.
+	 */
 	public void reset() {
 		headingOffset = getHeading();
 	}
+
+	private void println(String message) {
+		System.out.println(name + " " + message);
+	}
+
+	public void log() {
+		SmartDashboard.putBoolean(name + " " + "initialized", isInitialized());
+		CalData cal = getCalibration();
+		SmartDashboard.putNumber(name + " " + "gyro calibration", cal.gyro);
+		SmartDashboard.putNumber(name + " " + "accel calibration", cal.accel);
+		SmartDashboard.putNumber(name + " " + "mag calibration", cal.mag);
+		SmartDashboard.putNumber(name + " " + "sys calibration", cal.sys);
+		SystemStatus stat = getSystemStatus();
+		SmartDashboard.putNumber(name + " " + "status", stat.system_status);
+		SmartDashboard.putNumber(name + " " + "self test", stat.self_test_result);
+		SmartDashboard.putNumber(name + " " + "error", stat.system_error);
+		double[] vec = getVector();
+		SmartDashboard.putNumber(name + " " + "X", vec[0]);
+		SmartDashboard.putNumber(name + " " + "Y", vec[1]);
+		SmartDashboard.putNumber(name + " " + "Z", vec[2]);
+	} 
 }
