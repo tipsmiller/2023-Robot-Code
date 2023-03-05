@@ -9,7 +9,6 @@ import edu.wpi.first.wpilibj2.command.Command;
 import edu.wpi.first.wpilibj2.command.CommandScheduler;
 import frc.robot.subsystems.BNO055;
 import frc.robot.subsystems.BNO055.BNO055OffsetData;
-import frc.robot.subsystems.BNO055.opmode_t;
 import edu.wpi.first.wpilibj.I2C;
 
 
@@ -25,9 +24,25 @@ public class Robot extends TimedRobot {
 
   private RobotContainer m_robotContainer;
 
-  public BNO055 m_gyro;
-  private BNO055OffsetData bnoOffsets = new BNO055OffsetData(8, 32, -35, -24, -2, 1, -1, -44, 68, -166, 836);
+  private static final BNO055OffsetData bno1Offsets = new BNO055OffsetData(-10, -32, -17, -24, -1, -4, 0, -63, -42, 381, 524);
+  private static BNO055 bno1 = new BNO055(
+    I2C.Port.kMXP,
+    BNO055.BNO055_ADDRESS_A,
+    "BNO055-1",
+    BNO055.opmode_t.OPERATION_MODE_NDOF,
+    BNO055.vector_type_t.VECTOR_GRAVITY,
+    bno1Offsets
+  );
 
+  private static final BNO055OffsetData bno2Offsets = new BNO055OffsetData(-6, 2, -1, -24, -1, -4, 0, -105, -16, -62, 624);
+  private static BNO055 bno2 = new BNO055(
+    I2C.Port.kMXP,
+    BNO055.BNO055_ADDRESS_B,
+    "BNO055-2",
+    BNO055.opmode_t.OPERATION_MODE_NDOF,
+    BNO055.vector_type_t.VECTOR_GRAVITY,
+    bno2Offsets
+  );
   /**
    * This function is run when the robot is first started up and should be used for any
    * initialization code.
@@ -38,14 +53,6 @@ public class Robot extends TimedRobot {
     // autonomous chooser on the dashboard.
     //m_robotContainer = new RobotContainer();
     //m_robotContainer.robotInit();
-    m_gyro = BNO055.getInstance(
-      BNO055.opmode_t.OPERATION_MODE_NDOF,
-      BNO055.vector_type_t.VECTOR_GRAVITY,
-      I2C.Port.kMXP,
-      BNO055.BNO055_ADDRESS_A,
-      bnoOffsets,
-      "BNO055-1"
-    );
   }
 
   /**
@@ -62,14 +69,13 @@ public class Robot extends TimedRobot {
     // and running subsystem periodic() methods.  This must be called from the robot's periodic
     // block in order for anything in the Command-based framework to work.
     CommandScheduler.getInstance().run();
-    m_gyro.log();
+    bno1.log();
+    bno2.log();
   }
 
   /** This function is called once each time the robot enters Disabled mode. */
   @Override
   public void disabledInit() {
-    m_gyro.setMode(opmode_t.OPERATION_MODE_NDOF);
-    m_gyro.reset();
   }
 
   @Override
@@ -100,7 +106,8 @@ public class Robot extends TimedRobot {
     if (m_autonomousCommand != null) {
       m_autonomousCommand.cancel();
     }
-    BNO055OffsetData offsets = m_gyro.readOffsets();
+    bno1.readOffsets();
+    bno2.readOffsets();
   }
 
   /** This function is called periodically during operator control. */
